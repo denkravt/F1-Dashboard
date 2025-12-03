@@ -39,10 +39,10 @@ def fetch_data(endpoint, params=None):
 # Cached API calls using Streamlit's cache_data decorator
 
 @st.cache_data
-def fetch_meetings(year, country):
-    # The 'meetings' endpoint returns all information for a specified meeting (Miami, Monaco, Imola, etc)
-    # for a specified year (2023, 2024, etc).
-    df = fetch_data("meetings", {"year": year, "country_name": country})
+def fetch_meetings(year):
+    # The 'meetings' endpoint returns all information for meetings in a specified year.
+    # Removed country filter - now fetches all Grand Prix events for the year.
+    df = fetch_data("meetings", {"year": year})
     if df.empty:
         st.error("⚠️ No meeting data found.")
         return pd.DataFrame()
