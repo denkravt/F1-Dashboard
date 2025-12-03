@@ -27,7 +27,7 @@ st.markdown("_Powered by OpenF1.org • Built by Attila Bordan_")
 col1, col2 = st.columns(2)
 
 with col1:
-    # Step 1: Select Year and Country dynamically
+    # Step 1: Select Year dynamically
     available_years = [2023, 2024, 2025]
     selected_year = st.selectbox("Select Year", available_years, index=len(available_years) - 1)
 
@@ -38,26 +38,36 @@ with col1:
         st.error("No meetings found for this year.")
         st.stop()
 
-    available_countries = sorted(all_meetings["country_name"].dropna().unique())
-    selected_country = st.selectbox("Select Country", available_countries)
+    # Create a label for Grand Prix selection
+    all_meetings["label"] = all_meetings["meeting_name"] + " - " + all_meetings["location"]
+    all_meetings = all_meetings.sort_values(by="meeting_key", ascending=False)
 
-    # Filter meetings for selected year and country
-    filtered_meetings = all_meetings[all_meetings["country_name"] == selected_country].copy()
-    filtered_meetings["label"] = filtered_meetings["meeting_name"] + " - " + filtered_meetings["location"]
-    filtered_meetings = filtered_meetings.sort_values(by="meeting_key", ascending=False)
-
-with col2:
-    selected_meeting = st.selectbox("Select Grand Prix", filtered_meetings["label"], disabled=True)
-    selected_meeting_key = filtered_meetings.loc[
-        filtered_meetings["label"] == selected_meeting, "meeting_key"
+    # Select Grand Prix directly
+    selected_meeting = st.selectbox("Select Grand Prix", all_meetings["label"])
+    selected_meeting_key = all_meetings.loc[
+        all_meetings["label"] == selected_meeting, "meeting_key"
     ].values[0]
+    
+    # Extract meeting name for display
+    selected_meeting_name = all_meetings.loc[
+        all_meetings["label"] == selected_meeting, "meeting_name"
+    ].values[0]
+
+    # Fetch sessions for the selected Grand Prix
     sessions = fetch_sessions(selected_meeting_key)
-    selected_session = st.selectbox("Select Session", sessions["label"])
+    
+    # Extract session type for easier filtering
     sessions["session_type"] = sessions["label"].str.extract(r"^(.*?)\s\(")
+    
+    # Find the Race session index, default to 0 if not found
+    race_rows = sessions[sessions["session_type"].str.contains("Race", case=False, na=False)]
+    default_index = int(race_rows.index[0]) if len(race_rows) > 0 else 0
+    
+    selected_session = st.selectbox("Select Session", sessions["label"], index=default_index)
     selected_session_type = sessions.loc[sessions["label"] == selected_session, "session_type"].values[0]
     selected_session_key = sessions.loc[sessions["label"] == selected_session, "session_key"].values[0]
 
-st.markdown(f"### 🏁 Session Overview: `{selected_session}`")
+st.markdown(f"### 📊 Session Overview: `{selected_session}`")
 with st.expander("📋 Session Details", expanded=False):
     st.write(f"**Meeting Key:** {selected_meeting_key}")
     st.write(f"**Session Key:** {selected_session_key}")
@@ -69,7 +79,7 @@ driver_color_map = build_driver_color_map(driver_df)
 driver_info = driver_df[["driver_number", "name_acronym"]]
 
 # Lap Times
-with st.expander(f"📈 Lap Time Chart for {selected_session_type} at {selected_country} {selected_year}",
+with st.expander(f"📈 Lap Time Chart for {selected_session_type} at {selected_meeting_name} {selected_year}",
                  expanded=True):
     lap_df = fetch_laps(selected_session_key)
     processed_df = process_lap_data(lap_df)
@@ -85,7 +95,7 @@ with st.expander(f"📈 Lap Time Chart for {selected_session_type} at {selected_
         st.plotly_chart(fig, use_container_width=True)
 
 # Tire Strategy
-with st.expander(f"🛞 Tire strategy for {selected_session_type} at {selected_country} {selected_year}", expanded=True):
+with st.expander(f"🛞 Tire strategy for {selected_session_type} at {selected_meeting_name} {selected_year}", expanded=True):
     stints = fetch_stints(selected_session_key)
     stints_df = process_stints(stints)
     stints_df["driver_number"] = stints_df["driver_number"].astype(str)
@@ -98,7 +108,7 @@ with st.expander(f"🛞 Tire strategy for {selected_session_type} at {selected_c
         st.plotly_chart(fig, use_container_width=True)
 
 # Pit Stops
-with st.expander(f"⏱  Pit stop durations for {selected_session_type} at {selected_country} {selected_year}",
+with st.expander(f"⏱ Pit stop durations for {selected_session_type} at {selected_meeting_name} {selected_year}",
                  expanded=True):
     pit_stop = fetch_pit_stop(selected_session_key)
     pit_stop_df = process_pit_stops(pit_stop)
