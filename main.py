@@ -246,12 +246,24 @@ st.markdown(
 svg_path, circuit_key = get_circuit_svg_path(country_name, circuit_name, meeting_name)
 
 if svg_path:
-    # Read and display SVG centered
+    # Read and display SVG centered with controlled size
     svg_content = load_circuit_svg(str(svg_path))
     
     st.markdown(
         f"""
-        <div style="display: flex; justify-content: center; align-items: center; padding: 20px;" data-circuit="{circuit_key}">
+        <style>
+            .circuit-container {{
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                padding: 20px 0;
+            }}
+            .circuit-container svg {{
+                max-width: 60%;
+                height: auto;
+            }}
+        </style>
+        <div class="circuit-container" data-circuit="{circuit_key}">
             {svg_content}
         </div>
         """,
