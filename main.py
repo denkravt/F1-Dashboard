@@ -216,63 +216,79 @@ with col1:
 # Circuit Layout Section
 st.markdown("---")
 meeting_details = all_meetings[all_meetings["meeting_key"] == selected_meeting_key].iloc[0]
-st.markdown(f"### 🏁 {selected_meeting_name} Circuit Layout")
 
-# Create columns for track info and image
-track_col1, track_col2 = st.columns([1, 2])
+# Get circuit info
+country_name = meeting_details.get("country_name", "")
+circuit_name = meeting_details.get("circuit_short_name", "")
+location = meeting_details.get("location", "")
+meeting_name = meeting_details.get("meeting_name", "")
 
-with track_col1:
-    st.markdown("**Circuit Information**")
-    if "circuit_short_name" in meeting_details and meeting_details["circuit_short_name"]:
-        st.write(f"🏎️ **Circuit:** {meeting_details['circuit_short_name']}")
-    if "location" in meeting_details:
-        st.write(f"📍 **Location:** {meeting_details['location']}")
-    if "country_name" in meeting_details:
-        st.write(f"🌍 **Country:** {meeting_details['country_name']}")
-    if "date_start" in meeting_details:
-        st.write(f"📅 **Date:** {meeting_details['date_start']}")
+# Build info line
+info_parts = []
+if circuit_name:
+    info_parts.append(f"🏎️ {circuit_name}")
+if location:
+    info_parts.append(f"📍 {location}")
+if country_name:
+    info_parts.append(f"🌍 {country_name}")
+info_line = " • ".join(info_parts)
 
-with track_col2:
-    # Try to load circuit SVG
-    country_name = meeting_details.get("country_name", "")
-    circuit_name = meeting_details.get("circuit_short_name", "")
-    meeting_name = meeting_details.get("meeting_name", "")
+# Centered title and info
+st.markdown(
+    f"""
+    <h3 style="text-align: center;">🏁 {selected_meeting_name} Circuit Layout</h3>
+    <p style="text-align: center; color: #666; margin-bottom: 30px;">{info_line}</p>
+    """,
+    unsafe_allow_html=True
+)
+
+# Try to load circuit SVG
+svg_path, circuit_key = get_circuit_svg_path(country_name, circuit_name, meeting_name)
+
+if svg_path:
+    # Read and display SVG centered with controlled size
+    svg_content = load_circuit_svg(str(svg_path))
     
-    svg_path, circuit_key = get_circuit_svg_path(country_name, circuit_name, meeting_name)
-    
-    if svg_path:
-        # Read and display SVG with custom styling
-        svg_content = load_circuit_svg(str(svg_path))
+    st.markdown(
+        f"""
+        <style>
+            .circuit-container {{
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                padding: 20px 0;
+            }}
+            .circuit-container svg {{
+                max-width: 60%;
+                height: auto;
+            }}
+        </style>
+        <div class="circuit-container" data-circuit="{circuit_key}">
+            {svg_content}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+else:
+    # Show setup instructions
+    st.info(
+        f"""
+        **Circuit layout not found**
         
-        # Add a unique key based on circuit to force re-render
-        st.markdown(
-            f"""
-            <div style="display: flex; justify-content: center; align-items: center; padding: 20px;" data-circuit="{circuit_key}">
-                {svg_content}
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-    else:
-        # Show setup instructions
-        st.info(
-            f"""
-            **Circuit layout not found**
-            
-            Looking for: `{CIRCUIT_MAPPING.get(country_name, 'unknown')}.svg`
-            
-            **Search criteria:**
-            - Country: {country_name}
-            - Circuit: {circuit_name}
-            - Meeting: {meeting_name}
-            
-            To display circuit layouts:
-            1. Create folder: `assets/circuits/`
-            2. Add SVG file with the correct name
-            
-            **Expected filename:** `{CIRCUIT_MAPPING.get(country_name, 'circuit-name')}.svg`
-            """
-        )
+        Looking for: `{CIRCUIT_MAPPING.get(country_name, 'unknown')}.svg`
+        
+        **Search criteria:**
+        - Country: {country_name}
+        - Circuit: {circuit_name}
+        - Meeting: {meeting_name}
+        
+        To display circuit layouts:
+        1. Create folder: `assets/circuits/`
+        2. Add SVG file with the correct name
+        
+        **Expected filename:** `{CIRCUIT_MAPPING.get(country_name, 'circuit-name')}.svg`
+        """
+    )
 
 st.markdown("---")
 
