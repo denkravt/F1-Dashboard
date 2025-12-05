@@ -2,6 +2,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import pandas as pd
+import numpy as np
 
 
 # Utility Formatters
@@ -228,4 +229,143 @@ def plot_pit_stop(pit_stop_df: pd.DataFrame, color_map: dict):
         hovermode="closest",
         barmode="group",
         height=600)
+    return fig
+
+
+def normalize_coordinates(location_df):
+    """
+    Normalize x, y coordinates to fit within SVG viewBox dimensions.
+    
+    Args:
+        location_df (pd.DataFrame): DataFrame with x, y, z coordinates
+    
+    Returns:
+        pd.DataFrame: DataFrame with normalized coordinates
+    """
+    if location_df.empty or 'x' not in location_df.columns or 'y' not in location_df.columns:
+        return location_df
+    
+    df = location_df.copy()
+    
+    # Remove any rows with missing coordinates
+    df = df.dropna(subset=['x', 'y'])
+    
+    if df.empty:
+        return df
+    
+    # Get coordinate ranges
+    x_min, x_max = df['x'].min(), df['x'].max()
+    y_min, y_max = df['y'].min(), df['y'].max()
+    
+    # Avoid division by zero
+    x_range = x_max - x_min if x_max != x_min else 1
+    y_range = y_max - y_min if y_max != y_min else 1
+    
+    # Normalize to 0-1 range
+    df['x_norm'] = (df['x'] - x_min) / x_range
+    df['y_norm'] = (df['y'] - y_min) / y_range
+    
+    return df
+
+
+def plot_lap_comparison_on_track(location_data_dict, color_map, svg_viewbox=(0, 0, 3500, 2000)):
+    """
+    Create an overlay visualization of driver laps on the track using Plotly.
+    
+    Args:
+        location_data_dict (dict): Dictionary mapping driver names to their location DataFrames
+        color_map (dict): Driver acronym to team color mapping
+        svg_viewbox (tuple): SVG viewBox dimensions (x, y, width, height)
+    
+    Returns:
+        Plotly Figure object
+    """
+    if not location_data_dict or all(df.empty for df in location_data_dict.values()):
+        st.warning("No location data available for comparison.")
+        return None
+    
+    # Combine all location data for normalization
+    all_data = []
+    for driver, df in location_data_dict.items():
+        if not df.empty:
+            df_copy = df.copy()
+            df_copy['driver'] = driver
+            all_data.append(df_copy)
+    
+    if not all_data:
+        return None
+    
+    combined_df = pd.concat(all_data, ignore_index=True)
+    
+    # Normalize coordinates based on all data
+    combined_df = normalize_coordinates(combined_df)
+    
+    if combined_df.empty:
+        st.warning("Unable to process location data.")
+        return None
+    
+    # Scale normalized coordinates to SVG viewBox
+    vb_x, vb_y, vb_width, vb_height = svg_viewbox
+    combined_df['x_svg'] = combined_df['x_norm'] * vb_width + vb_x
+    combined_df['y_svg'] = combined_df['y_norm'] * vb_height + vb_y
+    
+    # Create figure
+    fig = go.Figure()
+    
+    # Add trace for each driver
+    for driver in combined_df['driver'].unique():
+        driver_data = combined_df[combined_df['driver'] == driver].sort_values('date')
+        
+        if len(driver_data) < 2:
+            continue
+        
+        lap_num = driver_data['lap_number'].iloc[0] if 'lap_number' in driver_data.columns else "N/A"
+        
+        fig.add_trace(go.Scatter(
+            x=driver_data['x_svg'],
+            y=driver_data['y_svg'],
+            mode='lines',
+            name=f"{driver} - Lap {lap_num}",
+            line=dict(
+                color=color_map.get(driver, 'gray'),
+                width=3
+            ),
+            hovertemplate=f"<b>{driver}</b><br>" +
+                         f"Lap: {lap_num}<br>" +
+                         "X: %{x:.0f}<br>" +
+                         "Y: %{y:.0f}<br>" +
+                         "<extra></extra>"
+        ))
+    
+    # Update layout to match SVG viewBox
+    fig.update_layout(
+        title="Lap Comparison - Track Overlay",
+        xaxis=dict(
+            range=[vb_x, vb_x + vb_width],
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False
+        ),
+        yaxis=dict(
+            range=[vb_y + vb_height, vb_y],  # Inverted to match SVG coordinates
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False,
+            scaleanchor="x",
+            scaleratio=1
+        ),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        height=600,
+        hovermode='closest',
+        showlegend=True,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01,
+            bgcolor="rgba(255, 255, 255, 0.8)"
+        )
+    )
+    
     return fig
