@@ -54,6 +54,10 @@ def fetch_data(endpoint, params=None, max_retries=3, timeout=30):
                 else:
                     st.error(f"❌ OpenF1 API server timeout after {max_retries} attempts. Please try again later or select a different year.")
                     return pd.DataFrame()
+            elif e.response.status_code == 422:
+                # 422 usually means invalid parameters or data not available
+                st.error(f"❌ HTTP Error 422: {str(e)}\n\n**Possible reasons:**\n- Location data may not be available for this session\n- The session may be too old (pre-2023)\n- Parameters may be invalid\n\nURL: {full_url}")
+                return pd.DataFrame()
             else:
                 st.error(f"❌ HTTP Error {e.response.status_code}: {str(e)}")
                 return pd.DataFrame()
@@ -70,9 +74,11 @@ def fetch_data(endpoint, params=None, max_retries=3, timeout=30):
 def fetch_meetings(year):
     # The 'meetings' endpoint returns all information for meetings in a specified year.
     # Removed country filter - now fetches all Grand Prix events for the year.
-    df = fetch_data("meetings", {"year": year})
+    with st.spinner(f"Fetching meetings for {year}..."):
+        df = fetch_data("meetings", {"year": year})
+    
     if df.empty:
-        st.error("⚠️ No meeting data found.")
+        st.error(f"⚠️ No meeting data found for {year}. The API may be down or the year has no data.")
         return pd.DataFrame()
 
     # Create a label for easier dropdown display
@@ -133,21 +139,27 @@ def fetch_location_data(session_key, driver_number, lap_number=None):
     Returns:
         pd.DataFrame: DataFrame containing location data with x, y, z coordinates
     """
-    params = {
-        "session_key": session_key,
-        "driver_number": driver_number
-    }
-    
-    df = fetch_data("location", params)
-    
-    if df.empty:
+    try:
+        params = {
+            "session_key": session_key,
+            "driver_number": driver_number
+        }
+        
+        with st.spinner(f"Fetching location data for driver {driver_number}..."):
+            df = fetch_data("location", params)
+        
+        if df.empty:
+            st.warning(f"No location data returned for driver {driver_number}")
+            return df
+        
+        # Convert date column to datetime for easier filtering
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
+        
         return df
-    
-    # Convert date column to datetime for easier filtering
-    if 'date' in df.columns:
-        df['date'] = pd.to_datetime(df['date'])
-    
-    return df
+    except Exception as e:
+        st.error(f"Error fetching location data for driver {driver_number}: {str(e)}")
+        return pd.DataFrame()
 
 
 @st.cache_data

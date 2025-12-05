@@ -385,6 +385,13 @@ with st.expander("Compare Driver Laps on Circuit", expanded=False):
     The visualization uses real position data (x, y coordinates) from the OpenF1 API.
     """)
     
+    st.info("""
+    ℹ️ **Location Data Availability:**
+    - Location data is available for most 2023-2024 sessions
+    - Data may not be available for Practice sessions or older races
+    - If you see a 422 error, try selecting a Race session from 2024
+    """)
+    
     if not processed_df.empty:
         # Create driver selection
         available_drivers = sorted(processed_df['name_acronym'].unique())
@@ -398,13 +405,34 @@ with st.expander("Compare Driver Laps on Circuit", expanded=False):
                 key="driver1_select"
             )
             
-            # Get laps for driver 1
-            driver1_laps = processed_df[processed_df['name_acronym'] == driver1]['lap_number'].unique()
-            lap1 = st.selectbox(
+            # Get laps for driver 1 and find fastest lap
+            driver1_data = processed_df[processed_df['name_acronym'] == driver1].copy()
+            driver1_laps = sorted(driver1_data['lap_number'].unique())
+            
+            # Find fastest lap
+            fastest_lap1 = driver1_data.loc[driver1_data['lap_duration'].idxmin()]
+            fastest_lap1_num = int(fastest_lap1['lap_number'])
+            fastest_lap1_time = fastest_lap1['lap_duration']
+            
+            # Create lap options with "Fastest Lap" option
+            lap1_options = ["Fastest Lap"] + [f"Lap {lap}" for lap in driver1_laps]
+            lap1_display_text = [
+                f"Fastest Lap ({fastest_lap1_num}) - {fastest_lap1_time:.3f}s"
+            ] + [f"Lap {lap}" for lap in driver1_laps]
+            
+            lap1_selection = st.selectbox(
                 "Select Lap for First Driver",
-                options=sorted(driver1_laps),
+                options=range(len(lap1_options)),
+                format_func=lambda x: lap1_display_text[x],
                 key="lap1_select"
             )
+            
+            # Determine actual lap number
+            if lap1_selection == 0:
+                lap1 = fastest_lap1_num
+                st.info(f"🏁 Fastest lap: **{fastest_lap1_time:.3f}s**")
+            else:
+                lap1 = driver1_laps[lap1_selection - 1]
         
         with col_comp2:
             driver2 = st.selectbox(
@@ -414,15 +442,36 @@ with st.expander("Compare Driver Laps on Circuit", expanded=False):
                 key="driver2_select"
             )
             
-            # Get laps for driver 2
-            driver2_laps = processed_df[processed_df['name_acronym'] == driver2]['lap_number'].unique()
-            lap2 = st.selectbox(
+            # Get laps for driver 2 and find fastest lap
+            driver2_data = processed_df[processed_df['name_acronym'] == driver2].copy()
+            driver2_laps = sorted(driver2_data['lap_number'].unique())
+            
+            # Find fastest lap
+            fastest_lap2 = driver2_data.loc[driver2_data['lap_duration'].idxmin()]
+            fastest_lap2_num = int(fastest_lap2['lap_number'])
+            fastest_lap2_time = fastest_lap2['lap_duration']
+            
+            # Create lap options with "Fastest Lap" option
+            lap2_options = ["Fastest Lap"] + [f"Lap {lap}" for lap in driver2_laps]
+            lap2_display_text = [
+                f"Fastest Lap ({fastest_lap2_num}) - {fastest_lap2_time:.3f}s"
+            ] + [f"Lap {lap}" for lap in driver2_laps]
+            
+            lap2_selection = st.selectbox(
                 "Select Lap for Second Driver",
-                options=sorted(driver2_laps),
+                options=range(len(lap2_options)),
+                format_func=lambda x: lap2_display_text[x],
                 key="lap2_select"
             )
+            
+            # Determine actual lap number
+            if lap2_selection == 0:
+                lap2 = fastest_lap2_num
+                st.info(f"🏁 Fastest lap: **{fastest_lap2_time:.3f}s**")
+            else:
+                lap2 = driver2_laps[lap2_selection - 1]
         
-        if st.button("🔄 Load and Compare Laps", use_container_width=True):
+        if st.button("🔄 Load and Compare Laps", width="stretch"):
             with st.spinner("Loading position data from OpenF1 API..."):
                 # Get driver numbers
                 driver1_number = driver_df[driver_df['name_acronym'] == driver1]['driver_number'].iloc[0]
@@ -455,24 +504,32 @@ with st.expander("Compare Driver Laps on Circuit", expanded=False):
                         st.plotly_chart(fig, use_container_width=True)
                         
                         # Show some statistics
-                        col_stat1, col_stat2 = st.columns(2)
+                        col_stat1, col_stat2, col_stat3 = st.columns(3)
+                        
                         with col_stat1:
                             lap1_time = processed_df[
                                 (processed_df['name_acronym'] == driver1) & 
                                 (processed_df['lap_number'] == lap1)
                             ]['lap_duration'].iloc[0]
-                            st.metric(f"{driver1} - Lap {lap1}", f"{lap1_time:.3f}s")
+                            lap1_label = f"Lap {lap1}" + (" (Fastest)" if lap1 == fastest_lap1_num else "")
+                            st.metric(f"{driver1} - {lap1_label}", f"{lap1_time:.3f}s")
                         
                         with col_stat2:
                             lap2_time = processed_df[
                                 (processed_df['name_acronym'] == driver2) & 
                                 (processed_df['lap_number'] == lap2)
                             ]['lap_duration'].iloc[0]
-                            st.metric(f"{driver2} - Lap {lap2}", f"{lap2_time:.3f}s")
+                            lap2_label = f"Lap {lap2}" + (" (Fastest)" if lap2 == fastest_lap2_num else "")
+                            st.metric(f"{driver2} - {lap2_label}", f"{lap2_time:.3f}s")
                         
-                        time_diff = abs(lap1_time - lap2_time)
-                        faster_driver = driver1 if lap1_time < lap2_time else driver2
-                        st.info(f"⏱️ **Time Difference:** {time_diff:.3f}s (Advantage: {faster_driver})")
+                        with col_stat3:
+                            time_diff = abs(lap1_time - lap2_time)
+                            faster_driver = driver1 if lap1_time < lap2_time else driver2
+                            st.metric("Time Difference", f"{time_diff:.3f}s", delta=f"{faster_driver} faster")
+                        
+                        # Additional comparison info
+                        if lap1 == fastest_lap1_num and lap2 == fastest_lap2_num:
+                            st.success("🏆 Comparing both drivers' fastest laps of the session!")
     else:
         st.info("Load lap data first to enable lap comparison.")
 
