@@ -6,7 +6,8 @@ from app.data_loader import (
     fetch_laps,
     fetch_stints,
     fetch_pit_stop,
-    fetch_drivers
+    fetch_drivers,
+    fetch_location_for_lap
 )
 from app.data_processor import (
     process_lap_data,
@@ -17,7 +18,8 @@ from app.data_processor import (
 from app.visualizer import (
     plot_lap_times,
     plot_tire_strategy,
-    plot_pit_stop
+    plot_pit_stop,
+    plot_lap_comparison_on_track
 )
 
 # Circuit name mapping to standardized filenames
@@ -68,6 +70,34 @@ CIRCUIT_MAPPING = {
     "São Paulo": "interlagos",
     "China": "shanghai",
     "Chinese": "shanghai",
+}
+
+# SVG ViewBox dimensions for each circuit (you may need to adjust these based on your SVGs)
+CIRCUIT_VIEWBOX = {
+    "bahrain": (0, 0, 3183, 2363),
+    "jeddah": (0, 0, 3550, 2105),
+    "albert-park": (0, 0, 3255, 1742),
+    "baku": (0, 0, 3417, 1921),
+    "miami": (0, 0, 3630, 1755),
+    "monaco": (0, 0, 3125, 2559),
+    "barcelona": (0, 0, 3467, 1250),
+    "montreal": (0, 0, 3242, 1659),
+    "red-bull-ring": (0, 0, 3896, 2292),
+    "silverstone": (0, 0, 3084, 1913),
+    "hungaroring": (0, 0, 2792, 2705),
+    "spa": (0, 0, 3388, 2234),
+    "zandvoort": (0, 0, 3234, 2696),
+    "monza": (0, 0, 3363, 1563),
+    "marina-bay": (0, 0, 3334, 2292),
+    "suzuka": (0, 0, 2892, 3117),
+    "losail": (0, 0, 3696, 2867),
+    "cota": (0, 0, 3267, 2617),
+    "mexico-city": (0, 0, 3342, 2205),
+    "interlagos": (0, 0, 3463, 2305),
+    "las-vegas": (0, 0, 3500, 2255),
+    "yas-marina": (0, 0, 3350, 2105),
+    "imola": (0, 0, 3417, 1984),
+    "shanghai": (0, 0, 3530, 2400),
 }
 
 
@@ -170,18 +200,44 @@ st.set_page_config(page_title="F1 Strategy Dashboard", layout="wide")
 st.title("🏎️ Formula 1 Strategy Dashboard")
 st.markdown("_Powered by OpenF1.org • Built by Attila Bordan_")
 
+# API Status Check
+with st.spinner("Checking OpenF1 API status..."):
+    try:
+        import requests
+        test_url = "https://api.openf1.org/v1/meetings?year=2024"
+        response = requests.get(test_url, timeout=10)
+        if response.status_code == 200:
+            st.success("✅ OpenF1 API is online")
+        else:
+            st.warning(f"⚠️ OpenF1 API returned status {response.status_code}")
+    except requests.exceptions.Timeout:
+        st.error("❌ OpenF1 API timeout - servers may be slow or down")
+    except Exception as e:
+        st.error(f"❌ Unable to connect to OpenF1 API: {str(e)}")
+
 col1, col2 = st.columns(2)
 
 with col1:
     # Step 1: Select Year dynamically
     available_years = [2023, 2024, 2025]
-    selected_year = st.selectbox("Select Year", available_years, index=len(available_years) - 1)
+    selected_year = st.selectbox("Select Year", available_years, index=1)  # Default to 2024
 
     # Fetch all meetings for selected year
     all_meetings = fetch_data("meetings", {"year": selected_year})
 
     if all_meetings.empty:
-        st.error("No meetings found for this year.")
+        st.error("⚠️ Unable to fetch meeting data. Please check:")
+        st.info("""
+        - The OpenF1 API may be experiencing downtime
+        - Try selecting a different year (2024 or 2023 are more stable)
+        - Check your internet connection
+        - The API URL in your .env file is correct: `https://api.openf1.org/v1/`
+        """)
+        
+        # Allow user to continue with cached data if available
+        if st.button("🔄 Retry API Connection"):
+            st.rerun()
+        
         st.stop()
 
     # Create a label for Grand Prix selection
@@ -318,6 +374,166 @@ with st.expander(f"📈 Lap Time Chart for {selected_session_type} at {selected_
     else:
         fig = plot_lap_times(processed_df, driver_color_map)
         st.plotly_chart(fig, use_container_width=True)
+
+# Lap Comparison Feature - NEW!
+st.markdown("---")
+st.markdown("### 🏁 Lap Comparison - Track Overlay")
+
+with st.expander("Compare Driver Laps on Circuit", expanded=False):
+    st.markdown("""
+    This feature allows you to compare lap trajectories of two drivers on the actual circuit layout.
+    The visualization uses real position data (x, y coordinates) from the OpenF1 API.
+    """)
+    
+    st.info("""
+    ℹ️ **Location Data Availability:**
+    - Location data is available for most 2023-2024 sessions
+    - Data may not be available for Practice sessions or older races
+    - If you see a 422 error, try selecting a Race session from 2024
+    """)
+    
+    if not processed_df.empty:
+        # Create driver selection
+        available_drivers = sorted(processed_df['name_acronym'].unique())
+        
+        col_comp1, col_comp2 = st.columns(2)
+        
+        with col_comp1:
+            driver1 = st.selectbox(
+                "Select First Driver",
+                options=available_drivers,
+                key="driver1_select"
+            )
+            
+            # Get laps for driver 1 and find fastest lap
+            driver1_data = processed_df[processed_df['name_acronym'] == driver1].copy()
+            driver1_laps = sorted(driver1_data['lap_number'].unique())
+            
+            # Find fastest lap
+            fastest_lap1 = driver1_data.loc[driver1_data['lap_duration'].idxmin()]
+            fastest_lap1_num = int(fastest_lap1['lap_number'])
+            fastest_lap1_time = fastest_lap1['lap_duration']
+            
+            # Create lap options with "Fastest Lap" option
+            lap1_options = ["Fastest Lap"] + [f"Lap {lap}" for lap in driver1_laps]
+            lap1_display_text = [
+                f"Fastest Lap ({fastest_lap1_num}) - {fastest_lap1_time:.3f}s"
+            ] + [f"Lap {lap}" for lap in driver1_laps]
+            
+            lap1_selection = st.selectbox(
+                "Select Lap for First Driver",
+                options=range(len(lap1_options)),
+                format_func=lambda x: lap1_display_text[x],
+                key="lap1_select"
+            )
+            
+            # Determine actual lap number
+            if lap1_selection == 0:
+                lap1 = fastest_lap1_num
+                st.info(f"🏁 Fastest lap: **{fastest_lap1_time:.3f}s**")
+            else:
+                lap1 = driver1_laps[lap1_selection - 1]
+        
+        with col_comp2:
+            driver2 = st.selectbox(
+                "Select Second Driver",
+                options=available_drivers,
+                index=min(1, len(available_drivers) - 1),
+                key="driver2_select"
+            )
+            
+            # Get laps for driver 2 and find fastest lap
+            driver2_data = processed_df[processed_df['name_acronym'] == driver2].copy()
+            driver2_laps = sorted(driver2_data['lap_number'].unique())
+            
+            # Find fastest lap
+            fastest_lap2 = driver2_data.loc[driver2_data['lap_duration'].idxmin()]
+            fastest_lap2_num = int(fastest_lap2['lap_number'])
+            fastest_lap2_time = fastest_lap2['lap_duration']
+            
+            # Create lap options with "Fastest Lap" option
+            lap2_options = ["Fastest Lap"] + [f"Lap {lap}" for lap in driver2_laps]
+            lap2_display_text = [
+                f"Fastest Lap ({fastest_lap2_num}) - {fastest_lap2_time:.3f}s"
+            ] + [f"Lap {lap}" for lap in driver2_laps]
+            
+            lap2_selection = st.selectbox(
+                "Select Lap for Second Driver",
+                options=range(len(lap2_options)),
+                format_func=lambda x: lap2_display_text[x],
+                key="lap2_select"
+            )
+            
+            # Determine actual lap number
+            if lap2_selection == 0:
+                lap2 = fastest_lap2_num
+                st.info(f"🏁 Fastest lap: **{fastest_lap2_time:.3f}s**")
+            else:
+                lap2 = driver2_laps[lap2_selection - 1]
+        
+        if st.button("🔄 Load and Compare Laps", width="stretch"):
+            with st.spinner("Loading position data from OpenF1 API..."):
+                # Get driver numbers
+                driver1_number = driver_df[driver_df['name_acronym'] == driver1]['driver_number'].iloc[0]
+                driver2_number = driver_df[driver_df['name_acronym'] == driver2]['driver_number'].iloc[0]
+                
+                # Fetch location data for both laps
+                location1 = fetch_location_for_lap(selected_session_key, int(driver1_number), lap1, processed_df)
+                location2 = fetch_location_for_lap(selected_session_key, int(driver2_number), lap2, processed_df)
+                
+                if location1.empty and location2.empty:
+                    st.error("❌ No location data available for these laps. This data may not be available for all sessions.")
+                elif location1.empty:
+                    st.warning(f"⚠️ No location data found for {driver1} - Lap {lap1}")
+                elif location2.empty:
+                    st.warning(f"⚠️ No location data found for {driver2} - Lap {lap2}")
+                else:
+                    # Prepare data dictionary
+                    location_data = {
+                        driver1: location1,
+                        driver2: location2
+                    }
+                    
+                    # Get viewbox for current circuit
+                    viewbox = CIRCUIT_VIEWBOX.get(circuit_key, (0, 0, 3500, 2000))
+                    
+                    # Create visualization
+                    fig = plot_lap_comparison_on_track(location_data, driver_color_map, viewbox)
+                    
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Show some statistics
+                        col_stat1, col_stat2, col_stat3 = st.columns(3)
+                        
+                        with col_stat1:
+                            lap1_time = processed_df[
+                                (processed_df['name_acronym'] == driver1) & 
+                                (processed_df['lap_number'] == lap1)
+                            ]['lap_duration'].iloc[0]
+                            lap1_label = f"Lap {lap1}" + (" (Fastest)" if lap1 == fastest_lap1_num else "")
+                            st.metric(f"{driver1} - {lap1_label}", f"{lap1_time:.3f}s")
+                        
+                        with col_stat2:
+                            lap2_time = processed_df[
+                                (processed_df['name_acronym'] == driver2) & 
+                                (processed_df['lap_number'] == lap2)
+                            ]['lap_duration'].iloc[0]
+                            lap2_label = f"Lap {lap2}" + (" (Fastest)" if lap2 == fastest_lap2_num else "")
+                            st.metric(f"{driver2} - {lap2_label}", f"{lap2_time:.3f}s")
+                        
+                        with col_stat3:
+                            time_diff = abs(lap1_time - lap2_time)
+                            faster_driver = driver1 if lap1_time < lap2_time else driver2
+                            st.metric("Time Difference", f"{time_diff:.3f}s", delta=f"{faster_driver} faster")
+                        
+                        # Additional comparison info
+                        if lap1 == fastest_lap1_num and lap2 == fastest_lap2_num:
+                            st.success("🏆 Comparing both drivers' fastest laps of the session!")
+    else:
+        st.info("Load lap data first to enable lap comparison.")
+
+st.markdown("---")
 
 # Tire Strategy
 with st.expander(f"🛞 Tire strategy for {selected_session_type} at {selected_meeting_name} {selected_year}", expanded=True):
