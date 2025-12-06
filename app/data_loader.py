@@ -127,42 +127,6 @@ def fetch_drivers(session_key):
 
 
 @st.cache_data
-def fetch_location_data(session_key, driver_number, lap_number=None):
-    """
-    Fetch location (x, y, z coordinates) data for a specific driver.
-    
-    Args:
-        session_key (int): Session identifier
-        driver_number (int): Driver number
-        lap_number (int, optional): Specific lap number to filter by
-    
-    Returns:
-        pd.DataFrame: DataFrame containing location data with x, y, z coordinates
-    """
-    try:
-        params = {
-            "session_key": session_key,
-            "driver_number": driver_number
-        }
-        
-        with st.spinner(f"Fetching location data for driver {driver_number}..."):
-            df = fetch_data("location", params)
-        
-        if df.empty:
-            st.warning(f"No location data returned for driver {driver_number}")
-            return df
-        
-        # Convert date column to datetime for easier filtering
-        if 'date' in df.columns:
-            df['date'] = pd.to_datetime(df['date'])
-        
-        return df
-    except Exception as e:
-        st.error(f"Error fetching location data for driver {driver_number}: {str(e)}")
-        return pd.DataFrame()
-
-
-@st.cache_data
 def fetch_location_for_lap(session_key, driver_number, lap_number, lap_data):
     """
     Fetch location data for a specific lap by filtering based on lap start/end times.
@@ -177,12 +141,6 @@ def fetch_location_for_lap(session_key, driver_number, lap_number, lap_data):
         pd.DataFrame: Filtered location data for the specific lap
     """
     try:
-        # Get the full location data for this driver
-        location_df = fetch_location_data(session_key, driver_number)
-        
-        if location_df.empty or lap_data.empty:
-            return pd.DataFrame()
-        
         # Find the specific lap timing info
         lap_info = lap_data[
             (lap_data['driver_number'] == str(driver_number)) & 
@@ -190,6 +148,7 @@ def fetch_location_for_lap(session_key, driver_number, lap_number, lap_data):
         ]
         
         if lap_info.empty:
+            st.error(f"No lap timing data found for driver {driver_number}, lap {lap_number}")
             return pd.DataFrame()
         
         # Get lap start time
@@ -211,16 +170,36 @@ def fetch_location_for_lap(session_key, driver_number, lap_number, lap_data):
                 # Default to 2 minutes after start if no end time available
                 lap_end = lap_start + pd.Timedelta(minutes=2)
         
-        # Filter location data for this time window
-        filtered_location = location_df[
-            (location_df['date'] >= lap_start) & 
-            (location_df['date'] <= lap_end)
-        ].copy()
+        # Format dates for API (ISO format)
+        date_start_str = lap_start.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]  # Remove microseconds to milliseconds
+        date_end_str = lap_end.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]
+        
+        # Fetch location data with date range to limit data size
+        params = {
+            "session_key": session_key,
+            "driver_number": driver_number,
+            "date>": date_start_str,
+            "date<": date_end_str
+        }
+        
+        with st.spinner(f"Fetching location data for driver {driver_number}, lap {lap_number}..."):
+            location_df = fetch_data("location", params, max_retries=2, timeout=60)
+        
+        if location_df.empty:
+            st.warning(f"No location data returned for driver {driver_number}, lap {lap_number}")
+            return pd.DataFrame()
+        
+        # Convert date column to datetime
+        if 'date' in location_df.columns:
+            location_df['date'] = pd.to_datetime(location_df['date'])
         
         # Add lap number for reference
-        filtered_location['lap_number'] = lap_number
+        location_df['lap_number'] = lap_number
         
-        return filtered_location
+        return location_df
+        
     except Exception as e:
         st.error(f"Error fetching location data: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
         return pd.DataFrame()
