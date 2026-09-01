@@ -268,9 +268,97 @@ def normalize_coordinates(location_df):
     return df
 
 
+def calculate_time_delta_by_position(driver1_data, driver2_data, driver1_name, driver2_name):
+    """
+    Calculate which driver was ahead at each point on track by comparing elapsed time.
+    
+    Args:
+        driver1_data (pd.DataFrame): Location data for driver 1
+        driver2_data (pd.DataFrame): Location data for driver 2
+        driver1_name (str): Name of driver 1
+        driver2_name (str): Name of driver 2
+    
+    Returns:
+        tuple: (driver1_processed, driver2_processed)
+    """
+    # Sort by date to get chronological order
+    d1 = driver1_data.sort_values('date').copy().reset_index(drop=True)
+    d2 = driver2_data.sort_values('date').copy().reset_index(drop=True)
+    
+    # Calculate elapsed time from start of lap for each driver
+    d1['elapsed_time'] = (d1['date'] - d1['date'].min()).dt.total_seconds()
+    d2['elapsed_time'] = (d2['date'] - d2['date'].min()).dt.total_seconds()
+    
+    # Add distance traveled (approximate using cumulative distance between points)
+    d1['distance'] = 0.0
+    d2['distance'] = 0.0
+    
+    for i in range(1, len(d1)):
+        dx = d1.loc[i, 'x'] - d1.loc[i-1, 'x']
+        dy = d1.loc[i, 'y'] - d1.loc[i-1, 'y']
+        d1.loc[i, 'distance'] = d1.loc[i-1, 'distance'] + np.sqrt(dx**2 + dy**2)
+    
+    for i in range(1, len(d2)):
+        dx = d2.loc[i, 'x'] - d2.loc[i-1, 'x']
+        dy = d2.loc[i, 'y'] - d2.loc[i-1, 'y']
+        d2.loc[i, 'distance'] = d2.loc[i-1, 'distance'] + np.sqrt(dx**2 + dy**2)
+    
+    # Normalize distance to percentage (0-100)
+    max_dist_1 = d1['distance'].max()
+    max_dist_2 = d2['distance'].max()
+    
+    if max_dist_1 > 0:
+        d1['distance_pct'] = (d1['distance'] / max_dist_1) * 100
+    else:
+        d1['distance_pct'] = 0
+        
+    if max_dist_2 > 0:
+        d2['distance_pct'] = (d2['distance'] / max_dist_2) * 100
+    else:
+        d2['distance_pct'] = 0
+    
+    # For each point on driver 1's path, find closest point on driver 2's path
+    # and compare elapsed times
+    d1['time_delta'] = 0.0
+    d1['faster_driver'] = driver1_name
+    
+    for i in range(len(d1)):
+        dist_pct = d1.loc[i, 'distance_pct']
+        # Find closest matching distance percentage in driver 2
+        idx = (d2['distance_pct'] - dist_pct).abs().idxmin()
+        
+        time_diff = d1.loc[i, 'elapsed_time'] - d2.loc[idx, 'elapsed_time']
+        d1.loc[i, 'time_delta'] = time_diff
+        
+        # Negative means driver 1 took less time = driver 1 is faster
+        if time_diff < 0:
+            d1.loc[i, 'faster_driver'] = driver1_name
+        else:
+            d1.loc[i, 'faster_driver'] = driver2_name
+    
+    # Do the same for driver 2
+    d2['time_delta'] = 0.0
+    d2['faster_driver'] = driver2_name
+    
+    for i in range(len(d2)):
+        dist_pct = d2.loc[i, 'distance_pct']
+        idx = (d1['distance_pct'] - dist_pct).abs().idxmin()
+        
+        time_diff = d2.loc[i, 'elapsed_time'] - d1.loc[idx, 'elapsed_time']
+        d2.loc[i, 'time_delta'] = time_diff
+        
+        if time_diff < 0:
+            d2.loc[i, 'faster_driver'] = driver2_name
+        else:
+            d2.loc[i, 'faster_driver'] = driver1_name
+    
+    return d1, d2
+
+
 def plot_lap_comparison_on_track(location_data_dict, color_map, svg_viewbox=(0, 0, 3500, 2000)):
     """
     Create an overlay visualization of driver laps on the track using Plotly.
+    Shows who was faster at each section using color coding.
     
     Args:
         location_data_dict (dict): Dictionary mapping driver names to their location DataFrames
@@ -284,62 +372,145 @@ def plot_lap_comparison_on_track(location_data_dict, color_map, svg_viewbox=(0, 
         st.warning("No location data available for comparison.")
         return None
     
-    # Combine all location data for normalization
-    all_data = []
-    for driver, df in location_data_dict.items():
-        if not df.empty:
-            df_copy = df.copy()
-            df_copy['driver'] = driver
-            all_data.append(df_copy)
-    
-    if not all_data:
+    drivers = list(location_data_dict.keys())
+    if len(drivers) != 2:
+        st.warning("This comparison requires exactly 2 drivers.")
         return None
     
-    combined_df = pd.concat(all_data, ignore_index=True)
+    driver1, driver2 = drivers
+    driver1_data = location_data_dict[driver1].copy()
+    driver2_data = location_data_dict[driver2].copy()
     
-    # Normalize coordinates based on all data
+    if driver1_data.empty or driver2_data.empty:
+        st.warning("Missing location data for one or both drivers.")
+        return None
+    
+    # Add driver column to each dataset
+    driver1_data['driver'] = driver1
+    driver2_data['driver'] = driver2
+    
+    # Calculate time deltas
+    d1_processed, d2_processed = calculate_time_delta_by_position(
+        driver1_data, driver2_data, driver1, driver2
+    )
+    
+    # Combine for normalization
+    combined_df = pd.concat([d1_processed, d2_processed], ignore_index=True)
     combined_df = normalize_coordinates(combined_df)
     
     if combined_df.empty:
         st.warning("Unable to process location data.")
         return None
     
-    # Scale normalized coordinates to SVG viewBox
+    # Scale to SVG viewBox
     vb_x, vb_y, vb_width, vb_height = svg_viewbox
     combined_df['x_svg'] = combined_df['x_norm'] * vb_width + vb_x
     combined_df['y_svg'] = combined_df['y_norm'] * vb_height + vb_y
     
+    # Split back into individual drivers
+    d1_plot = combined_df[combined_df['driver'] == driver1].sort_values('date').reset_index(drop=True)
+    d2_plot = combined_df[combined_df['driver'] == driver2].sort_values('date').reset_index(drop=True)
+    
     # Create figure
     fig = go.Figure()
     
-    # Add trace for each driver
-    for driver in combined_df['driver'].unique():
-        driver_data = combined_df[combined_df['driver'] == driver].sort_values('date')
-        
-        if len(driver_data) < 2:
-            continue
-        
-        lap_num = driver_data['lap_number'].iloc[0] if 'lap_number' in driver_data.columns else "N/A"
-        
-        fig.add_trace(go.Scatter(
-            x=driver_data['x_svg'],
-            y=driver_data['y_svg'],
-            mode='lines',
-            name=f"{driver} - Lap {lap_num}",
-            line=dict(
-                color=color_map.get(driver, 'gray'),
-                width=3
-            ),
-            hovertemplate=f"<b>{driver}</b><br>" +
-                         f"Lap: {lap_num}<br>" +
-                         "X: %{x:.0f}<br>" +
-                         "Y: %{y:.0f}<br>" +
-                         "<extra></extra>"
-        ))
+    # Get colors for each driver
+    color1 = color_map.get(driver1, '#27AE60')  # Default green
+    color2 = color_map.get(driver2, '#3498DB')  # Default blue
     
-    # Update layout to match SVG viewBox
+    lap_num1 = d1_plot['lap_number'].iloc[0] if 'lap_number' in d1_plot.columns else "N/A"
+    lap_num2 = d2_plot['lap_number'].iloc[0] if 'lap_number' in d2_plot.columns else "N/A"
+    
+    # Create continuous color array based on who's faster
+    # Driver 1's line colored by who was faster
+    colors_d1 = [color1 if faster == driver1 else color2 for faster in d1_plot['faster_driver']]
+    
+    # Plot driver 1's complete path as one line with color gradient
+    fig.add_trace(go.Scatter(
+        x=d1_plot['x_svg'],
+        y=d1_plot['y_svg'],
+        mode='lines',
+        name=driver1,
+        line=dict(
+            color=colors_d1[0],  # Base color
+            width=8
+        ),
+        opacity=0.7,
+        showlegend=False,
+        hovertemplate=f"<b>{driver1}</b> - Lap {lap_num1}<br>" +
+                     "Delta: %{customdata:.3f}s<br>" +
+                     "<extra></extra>",
+        customdata=d1_plot['time_delta']
+    ))
+    
+    # Overlay segments in different color where driver 2 was faster
+    for i in range(1, len(d1_plot)):
+        if d1_plot.loc[i, 'faster_driver'] == driver2:
+            fig.add_trace(go.Scatter(
+                x=d1_plot.loc[i-1:i, 'x_svg'],
+                y=d1_plot.loc[i-1:i, 'y_svg'],
+                mode='lines',
+                line=dict(color=color2, width=8),
+                opacity=0.7,
+                showlegend=False,
+                hoverinfo='skip'
+            ))
+    
+    # Driver 2's line colored by who was faster
+    colors_d2 = [color2 if faster == driver2 else color1 for faster in d2_plot['faster_driver']]
+    
+    # Plot driver 2's complete path
+    fig.add_trace(go.Scatter(
+        x=d2_plot['x_svg'],
+        y=d2_plot['y_svg'],
+        mode='lines',
+        name=driver2,
+        line=dict(
+            color=colors_d2[0],
+            width=6,
+            dash='dot'
+        ),
+        opacity=0.5,
+        showlegend=False,
+        hovertemplate=f"<b>{driver2}</b> - Lap {lap_num2}<br>" +
+                     "Delta: %{customdata:.3f}s<br>" +
+                     "<extra></extra>",
+        customdata=d2_plot['time_delta']
+    ))
+    
+    # Overlay segments in different color where driver 1 was faster
+    for i in range(1, len(d2_plot)):
+        if d2_plot.loc[i, 'faster_driver'] == driver1:
+            fig.add_trace(go.Scatter(
+                x=d2_plot.loc[i-1:i, 'x_svg'],
+                y=d2_plot.loc[i-1:i, 'y_svg'],
+                mode='lines',
+                line=dict(color=color1, width=6, dash='dot'),
+                opacity=0.5,
+                showlegend=False,
+                hoverinfo='skip'
+            ))
+    
+    # Add legend manually
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None],
+        mode='lines',
+        name=f"{driver1} faster",
+        line=dict(color=color1, width=8),
+        showlegend=True
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None],
+        mode='lines',
+        name=f"{driver2} faster",
+        line=dict(color=color2, width=8),
+        showlegend=True
+    ))
+    
+    # Update layout
     fig.update_layout(
-        title="Lap Comparison - Track Overlay",
+        title=f"Lap Comparison - {driver1} vs {driver2}<br><sub>Line color shows who was faster at each section</sub>",
         xaxis=dict(
             range=[vb_x, vb_x + vb_width],
             showgrid=False,
@@ -347,16 +518,16 @@ def plot_lap_comparison_on_track(location_data_dict, color_map, svg_viewbox=(0, 
             showticklabels=False
         ),
         yaxis=dict(
-            range=[vb_y + vb_height, vb_y],  # Inverted to match SVG coordinates
+            range=[vb_y + vb_height, vb_y],
             showgrid=False,
             zeroline=False,
             showticklabels=False,
             scaleanchor="x",
             scaleratio=1
         ),
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        height=600,
+        plot_bgcolor='rgba(245,245,250,1)',
+        paper_bgcolor='white',
+        height=700,
         hovermode='closest',
         showlegend=True,
         legend=dict(
@@ -364,7 +535,9 @@ def plot_lap_comparison_on_track(location_data_dict, color_map, svg_viewbox=(0, 
             y=0.99,
             xanchor="left",
             x=0.01,
-            bgcolor="rgba(255, 255, 255, 0.8)"
+            bgcolor="rgba(255, 255, 255, 0.95)",
+            bordercolor="gray",
+            borderwidth=1
         )
     )
     

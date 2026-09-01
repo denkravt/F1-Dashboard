@@ -387,9 +387,10 @@ with st.expander("Compare Driver Laps on Circuit", expanded=False):
     
     st.info("""
     ℹ️ **Location Data Availability:**
-    - Location data is available for most 2023-2024 sessions
-    - Data may not be available for Practice sessions or older races
-    - If you see a 422 error, try selecting a Race session from 2024
+    - Location data is available for 2023-2024 Race sessions
+    - Each request fetches data for a specific lap using time-based filtering
+    - Best results with recent Grand Prix races (2024)
+    - May take 10-30 seconds to load position data for each lap
     """)
     
     if not processed_df.empty:
