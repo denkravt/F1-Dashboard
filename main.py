@@ -1,7 +1,8 @@
 import streamlit as st
+import requests
 from pathlib import Path
 from app.data_loader import (
-    fetch_data,
+    fetch_meetings,
     fetch_sessions,
     fetch_laps,
     fetch_stints,
@@ -195,6 +196,43 @@ def get_circuit_svg_path(country_name, circuit_name=None, meeting_name=None):
     return None, None
 
 
+def _select_driver_and_lap(ordinal, key_suffix, driver_index, available_drivers, processed_df):
+    """Render the driver + lap pickers for one side of a lap comparison.
+
+    Returns (driver, lap, fastest_lap_num, fastest_lap_time).
+    """
+    driver = st.selectbox(
+        f"Select {ordinal} Driver",
+        options=available_drivers,
+        index=driver_index,
+        key=f"driver{key_suffix}_select"
+    )
+
+    driver_data = processed_df[processed_df["name_acronym"] == driver].copy()
+    driver_laps = sorted(driver_data["lap_number"].unique())
+
+    fastest = driver_data.loc[driver_data["lap_duration"].idxmin()]
+    fastest_lap_num = int(fastest["lap_number"])
+    fastest_lap_time = fastest["lap_duration"]
+
+    options = ["Fastest Lap"] + [f"Lap {lap}" for lap in driver_laps]
+    display = [f"Fastest Lap ({fastest_lap_num}) - {fastest_lap_time:.3f}s"] + [f"Lap {lap}" for lap in driver_laps]
+    selection = st.selectbox(
+        f"Select Lap for {ordinal} Driver",
+        options=range(len(options)),
+        format_func=lambda x: display[x],
+        key=f"lap{key_suffix}_select"
+    )
+
+    if selection == 0:
+        st.info(f"🏁 Fastest lap: **{fastest_lap_time:.3f}s**")
+        lap = fastest_lap_num
+    else:
+        lap = driver_laps[selection - 1]
+
+    return driver, lap, fastest_lap_num, fastest_lap_time
+
+
 st.set_page_config(page_title="F1 Strategy Dashboard", layout="wide")
 
 st.title("🏎️ Formula 1 Strategy Dashboard")
@@ -203,7 +241,6 @@ st.markdown("_Powered by OpenF1.org • Built by Attila Bordan_")
 # API Status Check
 with st.spinner("Checking OpenF1 API status..."):
     try:
-        import requests
         test_url = "https://api.openf1.org/v1/meetings?year=2024"
         response = requests.get(test_url, timeout=10)
         if response.status_code == 200:
@@ -222,8 +259,8 @@ with col1:
     available_years = [2023, 2024, 2025]
     selected_year = st.selectbox("Select Year", available_years, index=1)  # Default to 2024
 
-    # Fetch all meetings for selected year
-    all_meetings = fetch_data("meetings", {"year": selected_year})
+    # Fetch all meetings for selected year (fetched via fetch_meetings, newest first)
+    all_meetings = fetch_meetings(selected_year)
 
     if all_meetings.empty:
         st.error("⚠️ Unable to fetch meeting data. Please check:")
@@ -239,10 +276,6 @@ with col1:
             st.rerun()
         
         st.stop()
-
-    # Create a label for Grand Prix selection
-    all_meetings["label"] = all_meetings["meeting_name"] + " - " + all_meetings["location"]
-    all_meetings = all_meetings.sort_values(by="meeting_key", ascending=False)
 
     # Select Grand Prix directly
     selected_meeting = st.selectbox("Select Grand Prix", all_meetings["label"])
@@ -373,7 +406,7 @@ with st.expander(f"📈 Lap Time Chart for {selected_session_type} at {selected_
         st.warning("No lap time data found.")
     else:
         fig = plot_lap_times(processed_df, driver_color_map)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 # Lap Comparison Feature - NEW!
 st.markdown("---")
@@ -400,77 +433,14 @@ with st.expander("Compare Driver Laps on Circuit", expanded=False):
         col_comp1, col_comp2 = st.columns(2)
         
         with col_comp1:
-            driver1 = st.selectbox(
-                "Select First Driver",
-                options=available_drivers,
-                key="driver1_select"
+            driver1, lap1, fastest_lap1_num, fastest_lap1_time = _select_driver_and_lap(
+                "First", "1", 0, available_drivers, processed_df
             )
-            
-            # Get laps for driver 1 and find fastest lap
-            driver1_data = processed_df[processed_df['name_acronym'] == driver1].copy()
-            driver1_laps = sorted(driver1_data['lap_number'].unique())
-            
-            # Find fastest lap
-            fastest_lap1 = driver1_data.loc[driver1_data['lap_duration'].idxmin()]
-            fastest_lap1_num = int(fastest_lap1['lap_number'])
-            fastest_lap1_time = fastest_lap1['lap_duration']
-            
-            # Create lap options with "Fastest Lap" option
-            lap1_options = ["Fastest Lap"] + [f"Lap {lap}" for lap in driver1_laps]
-            lap1_display_text = [
-                f"Fastest Lap ({fastest_lap1_num}) - {fastest_lap1_time:.3f}s"
-            ] + [f"Lap {lap}" for lap in driver1_laps]
-            
-            lap1_selection = st.selectbox(
-                "Select Lap for First Driver",
-                options=range(len(lap1_options)),
-                format_func=lambda x: lap1_display_text[x],
-                key="lap1_select"
-            )
-            
-            # Determine actual lap number
-            if lap1_selection == 0:
-                lap1 = fastest_lap1_num
-                st.info(f"🏁 Fastest lap: **{fastest_lap1_time:.3f}s**")
-            else:
-                lap1 = driver1_laps[lap1_selection - 1]
         
         with col_comp2:
-            driver2 = st.selectbox(
-                "Select Second Driver",
-                options=available_drivers,
-                index=min(1, len(available_drivers) - 1),
-                key="driver2_select"
+            driver2, lap2, fastest_lap2_num, fastest_lap2_time = _select_driver_and_lap(
+                "Second", "2", min(1, len(available_drivers) - 1), available_drivers, processed_df
             )
-            
-            # Get laps for driver 2 and find fastest lap
-            driver2_data = processed_df[processed_df['name_acronym'] == driver2].copy()
-            driver2_laps = sorted(driver2_data['lap_number'].unique())
-            
-            # Find fastest lap
-            fastest_lap2 = driver2_data.loc[driver2_data['lap_duration'].idxmin()]
-            fastest_lap2_num = int(fastest_lap2['lap_number'])
-            fastest_lap2_time = fastest_lap2['lap_duration']
-            
-            # Create lap options with "Fastest Lap" option
-            lap2_options = ["Fastest Lap"] + [f"Lap {lap}" for lap in driver2_laps]
-            lap2_display_text = [
-                f"Fastest Lap ({fastest_lap2_num}) - {fastest_lap2_time:.3f}s"
-            ] + [f"Lap {lap}" for lap in driver2_laps]
-            
-            lap2_selection = st.selectbox(
-                "Select Lap for Second Driver",
-                options=range(len(lap2_options)),
-                format_func=lambda x: lap2_display_text[x],
-                key="lap2_select"
-            )
-            
-            # Determine actual lap number
-            if lap2_selection == 0:
-                lap2 = fastest_lap2_num
-                st.info(f"🏁 Fastest lap: **{fastest_lap2_time:.3f}s**")
-            else:
-                lap2 = driver2_laps[lap2_selection - 1]
         
         if st.button("🔄 Load and Compare Laps", width="stretch"):
             with st.spinner("Loading position data from OpenF1 API..."):
@@ -502,7 +472,7 @@ with st.expander("Compare Driver Laps on Circuit", expanded=False):
                     fig = plot_lap_comparison_on_track(location_data, driver_color_map, viewbox)
                     
                     if fig:
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
                         
                         # Show some statistics
                         col_stat1, col_stat2, col_stat3 = st.columns(3)
@@ -547,7 +517,7 @@ with st.expander(f"🛞 Tire strategy for {selected_session_type} at {selected_m
         st.warning("No tire strategy data found.")
     else:
         fig = plot_tire_strategy(stints_df, driver_color_map)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 # Pit Stops
 with st.expander(f"⏱ Pit stop durations for {selected_session_type} at {selected_meeting_name} {selected_year}",
@@ -561,7 +531,7 @@ with st.expander(f"⏱ Pit stop durations for {selected_session_type} at {select
         st.warning("No pit stop data found.")
     else:
         fig = plot_pit_stop(pit_stop_df, driver_color_map)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 if processed_df.empty:
     st.info("Lap data is not available for this session.")

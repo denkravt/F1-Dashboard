@@ -268,91 +268,74 @@ def normalize_coordinates(location_df):
     return df
 
 
+def _cumulative_distance(df):
+    """Cumulative straight-line distance along a driver's path (from the x, y coordinates)."""
+    x = df['x'].to_numpy()
+    y = df['y'].to_numpy()
+    if len(x) <= 1:
+        return np.zeros(len(x), dtype=float)
+    seg_lengths = np.sqrt(np.diff(x) ** 2 + np.diff(y) ** 2)
+    return np.concatenate([[0.0], np.cumsum(seg_lengths)])
+
+
+def _space_delta(driver_df, other_df, driver_name, other_name):
+    """For each point on one driver's lap, find the closest point on the other
+    driver's lap (by % of track distance) and compute the elapsed-time gap.
+
+    Returns the driver DataFrame enriched with `elapsed_time`, `distance_pct`,
+    `time_delta` (seconds; negative = this driver was ahead) and `faster_driver`.
+    """
+    d = driver_df.sort_values('date').copy().reset_index(drop=True)
+    o = other_df.sort_values('date').copy().reset_index(drop=True)
+
+    d['elapsed_time'] = (d['date'] - d['date'].min()).dt.total_seconds()
+    o['elapsed_time'] = (o['date'] - o['date'].min()).dt.total_seconds()
+
+    d_dist = _cumulative_distance(d)
+    o_dist = _cumulative_distance(o)
+    d['distance_pct'] = d_dist / d_dist.max() * 100 if d_dist.max() > 0 else 0.0
+    o['distance_pct'] = o_dist / o_dist.max() * 100 if o_dist.max() > 0 else 0.0
+
+    # Nearest point on the other driver's path per distance % (vectorized),
+    # then the time gap = this driver's elapsed time minus the other's.
+    d['_orig_idx'] = np.arange(len(d))
+    left = d[['_orig_idx', 'distance_pct', 'elapsed_time']].sort_values('distance_pct')
+    right = o[['distance_pct', 'elapsed_time']].sort_values('distance_pct').rename(
+        columns={'elapsed_time': 'other_elapsed'}
+    )
+    matched = pd.merge_asof(left, right, on='distance_pct', direction='nearest')
+
+    d['time_delta'] = 0.0
+    d.loc[matched['_orig_idx'], 'time_delta'] = (
+        matched['elapsed_time'].to_numpy() - matched['other_elapsed'].to_numpy()
+    )
+    # Negative delta = this driver reached that track point faster (ahead).
+    d['faster_driver'] = np.where(d['time_delta'] < 0, driver_name, other_name)
+    return d.drop(columns='_orig_idx')
+
+
 def calculate_time_delta_by_position(driver1_data, driver2_data, driver1_name, driver2_name):
-    """
-    Calculate which driver was ahead at each point on track by comparing elapsed time.
-    
-    Args:
-        driver1_data (pd.DataFrame): Location data for driver 1
-        driver2_data (pd.DataFrame): Location data for driver 2
-        driver1_name (str): Name of driver 1
-        driver2_name (str): Name of driver 2
-    
-    Returns:
-        tuple: (driver1_processed, driver2_processed)
-    """
-    # Sort by date to get chronological order
-    d1 = driver1_data.sort_values('date').copy().reset_index(drop=True)
-    d2 = driver2_data.sort_values('date').copy().reset_index(drop=True)
-    
-    # Calculate elapsed time from start of lap for each driver
-    d1['elapsed_time'] = (d1['date'] - d1['date'].min()).dt.total_seconds()
-    d2['elapsed_time'] = (d2['date'] - d2['date'].min()).dt.total_seconds()
-    
-    # Add distance traveled (approximate using cumulative distance between points)
-    d1['distance'] = 0.0
-    d2['distance'] = 0.0
-    
-    for i in range(1, len(d1)):
-        dx = d1.loc[i, 'x'] - d1.loc[i-1, 'x']
-        dy = d1.loc[i, 'y'] - d1.loc[i-1, 'y']
-        d1.loc[i, 'distance'] = d1.loc[i-1, 'distance'] + np.sqrt(dx**2 + dy**2)
-    
-    for i in range(1, len(d2)):
-        dx = d2.loc[i, 'x'] - d2.loc[i-1, 'x']
-        dy = d2.loc[i, 'y'] - d2.loc[i-1, 'y']
-        d2.loc[i, 'distance'] = d2.loc[i-1, 'distance'] + np.sqrt(dx**2 + dy**2)
-    
-    # Normalize distance to percentage (0-100)
-    max_dist_1 = d1['distance'].max()
-    max_dist_2 = d2['distance'].max()
-    
-    if max_dist_1 > 0:
-        d1['distance_pct'] = (d1['distance'] / max_dist_1) * 100
-    else:
-        d1['distance_pct'] = 0
-        
-    if max_dist_2 > 0:
-        d2['distance_pct'] = (d2['distance'] / max_dist_2) * 100
-    else:
-        d2['distance_pct'] = 0
-    
-    # For each point on driver 1's path, find closest point on driver 2's path
-    # and compare elapsed times
-    d1['time_delta'] = 0.0
-    d1['faster_driver'] = driver1_name
-    
-    for i in range(len(d1)):
-        dist_pct = d1.loc[i, 'distance_pct']
-        # Find closest matching distance percentage in driver 2
-        idx = (d2['distance_pct'] - dist_pct).abs().idxmin()
-        
-        time_diff = d1.loc[i, 'elapsed_time'] - d2.loc[idx, 'elapsed_time']
-        d1.loc[i, 'time_delta'] = time_diff
-        
-        # Negative means driver 1 took less time = driver 1 is faster
-        if time_diff < 0:
-            d1.loc[i, 'faster_driver'] = driver1_name
-        else:
-            d1.loc[i, 'faster_driver'] = driver2_name
-    
-    # Do the same for driver 2
-    d2['time_delta'] = 0.0
-    d2['faster_driver'] = driver2_name
-    
-    for i in range(len(d2)):
-        dist_pct = d2.loc[i, 'distance_pct']
-        idx = (d1['distance_pct'] - dist_pct).abs().idxmin()
-        
-        time_diff = d2.loc[i, 'elapsed_time'] - d1.loc[idx, 'elapsed_time']
-        d2.loc[i, 'time_delta'] = time_diff
-        
-        if time_diff < 0:
-            d2.loc[i, 'faster_driver'] = driver2_name
-        else:
-            d2.loc[i, 'faster_driver'] = driver1_name
-    
+    """Compute per-section time deltas and the faster driver for both drivers,
+    evaluated at each driver's own path points."""
+    d1 = _space_delta(driver1_data, driver2_data, driver1_name, driver2_name)
+    d2 = _space_delta(driver2_data, driver1_data, driver2_name, driver1_name)
     return d1, d2
+
+
+def _overlay_runs(faster, target):
+    """Indices of contiguous runs where `faster == target`, as inclusive (start, end)
+    pairs — lets us draw the colour-coded sections with one trace per run instead
+    of one trace per point."""
+    runs, start = [], None
+    for i, f in enumerate(faster):
+        if f == target and start is None:
+            start = i
+        elif f != target and start is not None:
+            runs.append((start, i - 1))
+            start = None
+    if start is not None:
+        runs.append((start, len(faster) - 1))
+    return runs
 
 
 def plot_lap_comparison_on_track(location_data_dict, color_map, svg_viewbox=(0, 0, 3500, 2000)):
@@ -421,77 +404,43 @@ def plot_lap_comparison_on_track(location_data_dict, color_map, svg_viewbox=(0, 
     lap_num1 = d1_plot['lap_number'].iloc[0] if 'lap_number' in d1_plot.columns else "N/A"
     lap_num2 = d2_plot['lap_number'].iloc[0] if 'lap_number' in d2_plot.columns else "N/A"
     
-    # Create continuous color array based on who's faster
-    # Driver 1's line colored by who was faster
-    colors_d1 = [color1 if faster == driver1 else color2 for faster in d1_plot['faster_driver']]
-    
-    # Plot driver 1's complete path as one line with color gradient
+    # Base lap line for driver 1 (carries the per-point delta hover).
     fig.add_trace(go.Scatter(
-        x=d1_plot['x_svg'],
-        y=d1_plot['y_svg'],
-        mode='lines',
-        name=driver1,
-        line=dict(
-            color=colors_d1[0],  # Base color
-            width=8
-        ),
-        opacity=0.7,
+        x=d1_plot['x_svg'], y=d1_plot['y_svg'], mode='lines',
+        name=driver1, line=dict(color=color1, width=8), opacity=0.7,
         showlegend=False,
         hovertemplate=f"<b>{driver1}</b> - Lap {lap_num1}<br>" +
-                     "Delta: %{customdata:.3f}s<br>" +
-                     "<extra></extra>",
+                     "Delta: %{customdata:.3f}s<br><extra></extra>",
         customdata=d1_plot['time_delta']
     ))
-    
-    # Overlay segments in different color where driver 2 was faster
-    for i in range(1, len(d1_plot)):
-        if d1_plot.loc[i, 'faster_driver'] == driver2:
-            fig.add_trace(go.Scatter(
-                x=d1_plot.loc[i-1:i, 'x_svg'],
-                y=d1_plot.loc[i-1:i, 'y_svg'],
-                mode='lines',
-                line=dict(color=color2, width=8),
-                opacity=0.7,
-                showlegend=False,
-                hoverinfo='skip'
-            ))
-    
-    # Driver 2's line colored by who was faster
-    colors_d2 = [color2 if faster == driver2 else color1 for faster in d2_plot['faster_driver']]
-    
-    # Plot driver 2's complete path
+    # Re-colour the sections where driver 2 was ahead (solid underline).
+    for start, end in _overlay_runs(d1_plot['faster_driver'], driver2):
+        fig.add_trace(go.Scatter(
+            x=d1_plot['x_svg'].iloc[start:end + 1],
+            y=d1_plot['y_svg'].iloc[start:end + 1],
+            mode='lines', line=dict(color=color2, width=8), opacity=0.7,
+            showlegend=False, hoverinfo='skip'
+        ))
+
+    # Base lap line for driver 2.
     fig.add_trace(go.Scatter(
-        x=d2_plot['x_svg'],
-        y=d2_plot['y_svg'],
-        mode='lines',
-        name=driver2,
-        line=dict(
-            color=colors_d2[0],
-            width=6,
-            dash='dot'
-        ),
-        opacity=0.5,
+        x=d2_plot['x_svg'], y=d2_plot['y_svg'], mode='lines',
+        name=driver2, line=dict(color=color2, width=6, dash='dot'), opacity=0.5,
         showlegend=False,
         hovertemplate=f"<b>{driver2}</b> - Lap {lap_num2}<br>" +
-                     "Delta: %{customdata:.3f}s<br>" +
-                     "<extra></extra>",
+                     "Delta: %{customdata:.3f}s<br><extra></extra>",
         customdata=d2_plot['time_delta']
     ))
-    
-    # Overlay segments in different color where driver 1 was faster
-    for i in range(1, len(d2_plot)):
-        if d2_plot.loc[i, 'faster_driver'] == driver1:
-            fig.add_trace(go.Scatter(
-                x=d2_plot.loc[i-1:i, 'x_svg'],
-                y=d2_plot.loc[i-1:i, 'y_svg'],
-                mode='lines',
-                line=dict(color=color1, width=6, dash='dot'),
-                opacity=0.5,
-                showlegend=False,
-                hoverinfo='skip'
-            ))
-    
-    # Add legend manually
+    # Re-colour the sections where driver 1 was ahead (dotted underline).
+    for start, end in _overlay_runs(d2_plot['faster_driver'], driver1):
+        fig.add_trace(go.Scatter(
+            x=d2_plot['x_svg'].iloc[start:end + 1],
+            y=d2_plot['y_svg'].iloc[start:end + 1],
+            mode='lines', line=dict(color=color1, width=6, dash='dot'), opacity=0.5,
+            showlegend=False, hoverinfo='skip'
+        ))
+
+    # Legend entries
     fig.add_trace(go.Scatter(
         x=[None], y=[None],
         mode='lines',

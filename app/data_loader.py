@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 from dotenv import load_dotenv
 import os
+import traceback
 
 load_dotenv()
 
@@ -76,17 +77,15 @@ def fetch_meetings(year):
     # Removed country filter - now fetches all Grand Prix events for the year.
     with st.spinner(f"Fetching meetings for {year}..."):
         df = fetch_data("meetings", {"year": year})
-    
+
     if df.empty:
         st.error(f"⚠️ No meeting data found for {year}. The API may be down or the year has no data.")
         return pd.DataFrame()
 
-    # Create a label for easier dropdown display
+    # Create a label for easier dropdown display, newest meeting first.
     df["label"] = df["meeting_name"] + " - " + df["location"]
     df = df.sort_values(by="meeting_key", ascending=False)
-
-    # Return minimal relevant fields
-    return df[["meeting_key", "label", "year"]].drop_duplicates()
+    return df
 
 
 @st.cache_data
@@ -200,6 +199,5 @@ def fetch_location_for_lap(session_key, driver_number, lap_number, lap_data):
         
     except Exception as e:
         st.error(f"Error fetching location data: {str(e)}")
-        import traceback
         st.code(traceback.format_exc())
         return pd.DataFrame()
